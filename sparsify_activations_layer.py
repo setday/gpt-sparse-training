@@ -11,13 +11,6 @@ __all__ = [
 
 
 class LinearActivationsPruner(nn.Module):
-    """Замена :class:`torch.nn.Linear` с возможностью разреживания.
-
-    Поддерживаемые режимы:
-    - ``None``                       – без разреживания
-    - ``"masked-activations-layer"`` – обнуляем часть **активаций** (по признакам)
-    - ``"masked-weights-layer"``     – обнуляем часть **весов** слоя
-    """
 
     def __init__(
         self,
@@ -35,7 +28,6 @@ class LinearActivationsPruner(nn.Module):
         self.sparsity_ratio = float(sparsity_ratio)
         self.name = name
 
-        # Параметры слоя той же формы, что и у nn.Linear
         self.weight = nn.Parameter(torch.empty(out_features, in_features))
         nn.init.kaiming_uniform_(self.weight, a=5 ** 0.5)
 
@@ -44,10 +36,7 @@ class LinearActivationsPruner(nn.Module):
         else:
             self.register_parameter("bias", None)
 
-    # ---------------------------------------------------------------------
-    # Pretty‑print helpers
-    # ---------------------------------------------------------------------
-    def __repr__(self) -> str:  # pragma: no cover – repr is for humans
+    def __repr__(self) -> str:  
         extra = (
             f", sparsity_type={self.sparsity_type}, sparsity_ratio={self.sparsity_ratio}"
             if self.sparsity_type is not None
@@ -58,11 +47,8 @@ class LinearActivationsPruner(nn.Module):
             f"out_features={self.out_features}{extra})"
         )
 
-    # ------------------------------------------------------------------
-    # Статические функции для вычисления масок
-    # ------------------------------------------------------------------
     @staticmethod
-    def _compute_mask_activation(x: torch.Tensor, ratio: float) -> torch.Tensor:
+    def _compute_mask_rowwise(x: torch.Tensor, ratio: float) -> torch.Tensor:
         """0/1-маска для активаций, считается вдоль последней оси.
         Вырубает *k* наименьших |x| на каждом токене.
         """
@@ -80,12 +66,11 @@ class LinearActivationsPruner(nn.Module):
             return torch.zeros_like(x, dtype=torch.bool)
 
         abs_x = x.abs()
-        # k-й наименьший вдоль последней оси
         threshold = torch.kthvalue(abs_x, k, dim=-1, keepdim=True).values
         return abs_x >= threshold
 
     @staticmethod
-    def _compute_mask_weight(w: torch.Tensor, ratio: float) -> torch.Tensor:
+    def _compute_mask_global(w: torch.Tensor, ratio: float) -> torch.Tensor:
         """0/1-маска для весов – глобальный порог по всему тензору."""
         if ratio <= 0.0:
             return torch.ones_like(w, dtype=torch.bool)
@@ -99,25 +84,20 @@ class LinearActivationsPruner(nn.Module):
         threshold = torch.kthvalue(flat, k).values
         return w.abs() >= threshold
 
-    # ------------------------------------------------------------------
-    # Forward
-    # ------------------------------------------------------------------
-    def forward(self, x: torch.Tensor) -> torch.Tensor:  # noqa: D401
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor: 
         ratio = self.sparsity_ratio
 
-        # 1. Прореживаем активации (если требуется)
         if self.sparsity_type == "masked-activations-layer":
-            mask = self._compute_mask_activation(x, ratio).to(x.dtype)
+            mask = self._compute_mask_rowwise(x, ratio).to(x.dtype)
             x = x * mask
 
-        # 2. Готовим веса (сырые или прореженные)
         if self.sparsity_type == "masked-weights-layer":
-            w_mask = self._compute_mask_weight(self.weight, ratio).to(self.weight.dtype)
+            w_mask = self._compute_mask_rowwise(self.weight, ratio).to(self.weight.dtype)
             weight = self.weight * w_mask
         else:
             weight = self.weight
 
-        # 3. Линейное преобразование
         out = torch.matmul(x, weight.t())
         if self.bias is not None:
             out = out + self.bias
@@ -128,6 +108,7 @@ class LinearActivationsPruner(nn.Module):
         self.sparsity_ratio = float(sparsity_ratio)
 
     # ------------------------------------------------------------------
+
     @classmethod
     def from_original(
         cls,
