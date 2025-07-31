@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import torch
 from torch import nn
 from typing import Optional
@@ -9,22 +11,12 @@ __all__ = [
 
 
 class LinearActivationsPruner(nn.Module):
-    """A drop‑in replacement for :class:`torch.nn.Linear` with on‑the‑fly pruning.
+    """Замена :class:`torch.nn.Linear` с возможностью разреживания.
 
-    Parameters
-    ----------
-    in_features : int
-        Size of each input sample.
-    out_features : int
-        Size of each output sample.
-    bias : bool, default=True
-        If set to ``False``, the layer will not learn an additive bias.
-    sparsity_type : {None, "masked-activations-layer", "masked-weights-layer"}
-        Which tensor to prune. ``None`` disables pruning.
-    sparsity_ratio : float, optional
-        Fraction (0–1) of elements to set to zero.
-    name : str, optional
-        An arbitrary identifier (helpful for debugging / logging).
+    Поддерживаемые режимы:
+    - ``None``                       – без разреживания
+    - ``"masked-activations-layer"`` – обнуляем часть **активаций** (по признакам)
+    - ``"masked-weights-layer"``     – обнуляем часть **весов** слоя
     """
 
     def __init__(
@@ -33,17 +25,17 @@ class LinearActivationsPruner(nn.Module):
         out_features: int,
         bias: bool = True,
         sparsity_type: Optional[str] = None,
-        sparsity_ratio: Optional[float] = None,
+        sparsity_ratio: float = 0.0,
         name: Optional[str] = None,
     ) -> None:
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
         self.sparsity_type = sparsity_type
-        self.sparsity_ratio = sparsity_ratio or 0.0
+        self.sparsity_ratio = float(sparsity_ratio)
         self.name = name
 
-        # Weight / bias follow the same shape conventions as nn.Linear
+        # Параметры слоя той же формы, что и у nn.Linear
         self.weight = nn.Parameter(torch.empty(out_features, in_features))
         nn.init.kaiming_uniform_(self.weight, a=5 ** 0.5)
 
@@ -66,69 +58,84 @@ class LinearActivationsPruner(nn.Module):
             f"out_features={self.out_features}{extra})"
         )
 
-    # ---------------------------------------------------------------------
-    # Pruning helpers
-    # ---------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Статические функции для вычисления масок
+    # ------------------------------------------------------------------
     @staticmethod
-    def _compute_mask(tensor: torch.Tensor, sparsity_ratio: float) -> torch.Tensor:
-        """Return a 0/1 mask such that the given fraction of smallest |values| is zero."""
-        if sparsity_ratio <= 0.0:
-            return torch.ones_like(tensor, dtype=torch.bool)
-        if sparsity_ratio >= 1.0:
-            return torch.zeros_like(tensor, dtype=torch.bool)
+    def _compute_mask_activation(x: torch.Tensor, ratio: float) -> torch.Tensor:
+        """0/1-маска для активаций, считается вдоль последней оси.
+        Вырубает *k* наименьших |x| на каждом токене.
+        """
+        if ratio <= 0.0:
+            return torch.ones_like(x, dtype=torch.bool)
+        if ratio >= 1.0:
+            return torch.zeros_like(x, dtype=torch.bool)
 
-        # Flatten so we can apply one global threshold per tensor
-        flat = torch.abs(tensor).flatten()
-        k = int(sparsity_ratio * flat.numel())
+        *batch_dims, features = x.shape
+        k = int(ratio * features)
+
         if k == 0:
-            return torch.ones_like(tensor, dtype=torch.bool)
-        # ``torch.kthvalue`` gives the *k‑th* smallest (1‑indexed)
-        threshold = torch.kthvalue(flat, k).values  # shape: []
-        return torch.abs(tensor) >= threshold  # broadcast back to original shape
+            return torch.ones_like(x, dtype=torch.bool)
+        if k >= features:
+            return torch.zeros_like(x, dtype=torch.bool)
+
+        abs_x = x.abs()
+        # k-й наименьший вдоль последней оси
+        threshold = torch.kthvalue(abs_x, k, dim=-1, keepdim=True).values
+        return abs_x >= threshold
+
+    @staticmethod
+    def _compute_mask_weight(w: torch.Tensor, ratio: float) -> torch.Tensor:
+        """0/1-маска для весов – глобальный порог по всему тензору."""
+        if ratio <= 0.0:
+            return torch.ones_like(w, dtype=torch.bool)
+        if ratio >= 1.0:
+            return torch.zeros_like(w, dtype=torch.bool)
+
+        flat = w.abs().flatten()
+        k = int(ratio * flat.numel())
+        if k == 0:
+            return torch.ones_like(w, dtype=torch.bool)
+        threshold = torch.kthvalue(flat, k).values
+        return w.abs() >= threshold
 
     # ------------------------------------------------------------------
-    # Forward pass
+    # Forward
     # ------------------------------------------------------------------
     def forward(self, x: torch.Tensor) -> torch.Tensor:  # noqa: D401
-        mask_ratio = float(self.sparsity_ratio or 0.0)
+        ratio = self.sparsity_ratio
 
-        # 1. Prune activations if requested
+        # 1. Прореживаем активации (если требуется)
         if self.sparsity_type == "masked-activations-layer":
-            mask = self._compute_mask(x, mask_ratio).to(x.dtype)
+            mask = self._compute_mask_activation(x, ratio).to(x.dtype)
             x = x * mask
 
-        # 2. Prepare weight (pruned or raw)
+        # 2. Готовим веса (сырые или прореженные)
         if self.sparsity_type == "masked-weights-layer":
-            w_mask = self._compute_mask(self.weight, mask_ratio).to(self.weight.dtype)
+            w_mask = self._compute_mask_weight(self.weight, ratio).to(self.weight.dtype)
             weight = self.weight * w_mask
         else:
             weight = self.weight
 
-        # 3. Linear transform
+        # 3. Линейное преобразование
         out = torch.matmul(x, weight.t())
         if self.bias is not None:
             out = out + self.bias
         return out
 
     # ------------------------------------------------------------------
-    # Utilities
-    # ------------------------------------------------------------------
     def set_sparsity_ratio(self, sparsity_ratio: float) -> None:
-        """Dynamically update the sparsity ratio (for both weight and activation modes)."""
         self.sparsity_ratio = float(sparsity_ratio)
 
-    # ------------------------------------------------------------------
-    # Factory
     # ------------------------------------------------------------------
     @classmethod
     def from_original(
         cls,
         orig_linear: nn.Linear,
         sparsity_type: Optional[str] = None,
-        sparsity_ratio: Optional[float] = None,
+        sparsity_ratio: float = 0.0,
         name: Optional[str] = None,
     ) -> "LinearActivationsPruner":
-        """Create a pruner layer by cloning an existing :class:`nn.Linear`."""
         pruner = cls(
             orig_linear.in_features,
             orig_linear.out_features,
@@ -144,7 +151,7 @@ class LinearActivationsPruner(nn.Module):
 
 
 # ---------------------------------------------------------------------------
-# Module‑level helper to swap all linears in a model or sub‑module
+# Хелпер для массовой замены слоёв
 # ---------------------------------------------------------------------------
 
 def replace_linears_with_pruner(
@@ -152,14 +159,6 @@ def replace_linears_with_pruner(
     sparsity_ratio: float,
     sparsity_type: str = "masked-activations-layer",
 ):
-    """Recursively replace every :class:`nn.Linear` with a pruner counterpart.
-
-    Examples
-    --------
-    >>> replace_linears_with_pruner(model, sparsity_ratio=0.15,
-    ...                             sparsity_type="masked-weights-layer")
-    """
-
     for name, child in module.named_children():
         if isinstance(child, nn.Linear):
             pruner = LinearActivationsPruner.from_original(
@@ -173,5 +172,4 @@ def replace_linears_with_pruner(
             child.set_sparsity_ratio(sparsity_ratio)
             child.sparsity_type = sparsity_type
         else:
-            # Recurse into nested sub‑modules
             replace_linears_with_pruner(child, sparsity_ratio, sparsity_type)
