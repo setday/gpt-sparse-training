@@ -68,7 +68,6 @@ run_once () {
 
 run_once "orig" "0.0"
 
-# сетка
 for stype in "${TYPES[@]}"; do
   for sratio in "${RATIOS[@]}"; do
     run_once "${stype}" "${sratio}"
