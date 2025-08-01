@@ -9,7 +9,6 @@ __all__ = [
     "replace_linears_with_pruner",
 ]
 
-
 class LinearActivationsPruner(nn.Module):
 
     def __init__(
@@ -103,11 +102,8 @@ class LinearActivationsPruner(nn.Module):
             out = out + self.bias
         return out
 
-    # ------------------------------------------------------------------
     def set_sparsity_ratio(self, sparsity_ratio: float) -> None:
         self.sparsity_ratio = float(sparsity_ratio)
-
-    # ------------------------------------------------------------------
 
     @classmethod
     def from_original(
@@ -129,11 +125,6 @@ class LinearActivationsPruner(nn.Module):
         if orig_linear.bias is not None:
             pruner.bias.data.copy_(orig_linear.bias.data)
         return pruner
-
-
-# ---------------------------------------------------------------------------
-# Хелпер для массовой замены слоёв
-# ---------------------------------------------------------------------------
 
 def replace_linears_with_pruner(
     module: nn.Module,
