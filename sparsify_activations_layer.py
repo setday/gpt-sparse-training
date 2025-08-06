@@ -126,22 +126,60 @@ class LinearActivationsPruner(nn.Module):
             pruner.bias.data.copy_(orig_linear.bias.data)
         return pruner
 
+def set_sparsity_ratio(model: nn.Module, ratio: float):
+    for m in model.modules():
+        if isinstance(m, LinearActivationsPruner):
+            m.set_sparsity_ratio(ratio)   # просто перезаписываем атрибут, его изменение не влияет на поведение оптимизатора
+
+
 def replace_linears_with_pruner(
     module: nn.Module,
     sparsity_ratio: float,
     sparsity_type: str = "masked-activations-layer",
+    mode: str = "all",  # "all", "exclude-first-last", or "custom"
+    custom_slice: Optional[slice] = None,  # for "custom" mode
 ):
-    for name, child in module.named_children():
-        if isinstance(child, nn.Linear):
-            pruner = LinearActivationsPruner.from_original(
-                child,
-                sparsity_type=sparsity_type,
-                sparsity_ratio=sparsity_ratio,
-                name=name,
-            ).to(child.weight.device)
-            setattr(module, name, pruner)
-        elif isinstance(child, LinearActivationsPruner):
-            child.set_sparsity_ratio(sparsity_ratio)
-            child.sparsity_type = sparsity_type
-        else:
-            replace_linears_with_pruner(child, sparsity_ratio, sparsity_type)
+    linear_layers = []
+
+    def collect_linears(m: nn.Module, prefix=""):
+        for name, child in m.named_children():
+            full_name = f"{prefix}.{name}" if prefix else name
+            if isinstance(child, nn.Linear):
+                linear_layers.append((full_name, child))
+            elif isinstance(child, nn.Module):
+                collect_linears(child, prefix=full_name)
+
+    collect_linears(module)
+
+    if mode == "all":
+        to_replace = set(name for name, _ in linear_layers)
+    elif mode == "exclude-first-last" and len(linear_layers) > 2:
+        to_replace = set(name for name, _ in linear_layers[1:-1])
+    elif mode == "custom":
+        if custom_slice is None:
+            raise ValueError("custom_slice must be provided when mode='custom'")
+        to_replace = set(name for name, _ in linear_layers[custom_slice])
+    else:
+        to_replace = set()
+
+    def replace(m: nn.Module, prefix=""):
+        for name, child in m.named_children():
+            full_name = f"{prefix}.{name}" if prefix else name
+
+            if isinstance(child, nn.Linear) and full_name in to_replace:
+                pruner = LinearActivationsPruner.from_original(
+                    child,
+                    sparsity_type=sparsity_type,
+                    sparsity_ratio=sparsity_ratio,
+                    name=full_name,
+                ).to(child.weight.device)
+                setattr(m, name, pruner)
+
+            elif isinstance(child, LinearActivationsPruner):
+                child.set_sparsity_ratio(sparsity_ratio)
+                child.sparsity_type = sparsity_type
+
+            else:
+                replace(child, prefix=full_name)
+
+    replace(module)

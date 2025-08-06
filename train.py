@@ -1,11 +1,3 @@
-"""
-This training script runs on a single GPU (or CPU) only. All logic related to
-Distributed Data Parallel (DDP) has been removed for simplicity.
-
-Examples:
-$ python train.py --batch_size=32 --compile=False
-"""
-
 import os
 import time
 import math
@@ -16,6 +8,7 @@ import numpy as np
 import torch
 
 from model import GPTConfig, GPT
+from sparsity_scheduler import SparsityScheduler
 
 # -----------------------------------------------------------------------------
 # default config values designed to train a GPT‑2 (124 M) on OpenWebText
@@ -54,8 +47,23 @@ decay_lr = True  # whether to decay the learning rate
 warmup_iters = 2000  # warm‑up steps
 lr_decay_iters = 600_000  # should be ~= max_iters per Chinchilla
 min_lr = 6e-5  # ~= learning_rate/10 per Chinchilla
-sparsity_ratio = 0.0
+sparsity_mode = "static"
 sparsity_type = "masked-activations-layer"
+
+save_best_model = True
+always_save_checkpoint = True
+
+# EARLY‑STOPPING --------------------------------------------------------------
+early_stop_mode = True
+early_stop_patience = 3  # number of consecutive evals with rising perplexity
+# -----------------------------------------------------------------------------
+
+
+eval_ckpt_name = "best_model.pt"
+
+save_gradients = False
+gradient_save_interval = 250
+grads_dir = "grads"
 
 # system
 device = 'cuda' if torch.cuda.is_available() else 'cpu'  # 'cpu', 'cuda', 'cuda:0', etc.
@@ -76,6 +84,7 @@ config = {k: globals()[k] for k in config_keys}  # handy for logging
 
 # Set up reproducibility and I/O
 os.makedirs(out_dir, exist_ok=True)
+os.makedirs(grads_dir, exist_ok=True)
 seed_offset = 0
 
 torch.manual_seed(1337 + seed_offset)
@@ -92,8 +101,6 @@ ctx = (
 
 tokens_per_iter = gradient_accumulation_steps * batch_size * block_size
 print(f"tokens per iteration will be: {tokens_per_iter:,}")
-
-# Poor‑man's data loader -------------------------------------------------------
 
 data_dir = os.path.join('data', dataset)
 
@@ -116,11 +123,9 @@ def get_batch(split):
     return x, y
 
 
-# Model setup ------------------------------------------------------------------
 iter_num = 0
 best_val_loss = 1e9
 
-# Attempt to derive vocab_size from dataset metadata
 meta_path = os.path.join(data_dir, 'meta.pkl')
 meta_vocab_size = None
 if os.path.exists(meta_path):
@@ -129,7 +134,6 @@ if os.path.exists(meta_path):
     meta_vocab_size = meta['vocab_size']
     print(f"found vocab_size = {meta_vocab_size} (inside {meta_path})")
 
-# Build model
 model_args = dict(
     n_layer=n_layer,
     n_head=n_head,
@@ -146,17 +150,34 @@ if init_from == 'scratch':
         print("defaulting to vocab_size of GPT‑2 to 50304 (50257 rounded up for efficiency)")
     model_args['vocab_size'] = meta_vocab_size if meta_vocab_size is not None else 50304
     gptconf = GPTConfig(**model_args)
-    model = GPT(gptconf, sparsity_ratio, sparsity_type)
+    if sparsity_mode == "uniform":
+        model = GPT(gptconf, sparsity_ratio['start'], sparsity_type)
+    elif sparsity_mode == "grid":
+        model = GPT(gptconf, sparsity_ratio[0], sparsity_type)
+    elif sparsity_mode == "static":
+        model = GPT(gptconf, sparsity_ratio, sparsity_type)
+    else: 
+        raise ValueError("Could not classify such sparsity_mode")
 elif init_from == 'resume':
     print(f"Resuming training from {out_dir}")
-    ckpt_path = os.path.join(out_dir, 'ckpt.pt')
+    ckpt_path = os.path.join(out_dir, eval_ckpt_name)
     checkpoint = torch.load(ckpt_path, map_location=device)
     checkpoint_model_args = checkpoint['model_args']
     for k in ['n_layer', 'n_head', 'n_embd', 'block_size', 'bias', 'vocab_size']:
         model_args[k] = checkpoint_model_args[k]
         
     gptconf = GPTConfig(**model_args)
-    model = GPT(gptconf, sparsity_ratio, sparsity_type)
+    
+    if sparsity_mode == "uniform":
+        model = GPT(gptconf, sparsity_ratio['end'], sparsity_type)
+    elif sparsity_mode == "grid":
+        model = GPT(gptconf, sparsity_ratio[max(sparsity_ratio)], sparsity_type)
+    elif sparsity_mode == "static":
+        model = GPT(gptconf, sparsity_ratio, sparsity_type)
+    else: 
+        raise ValueError("Could not classify such sparsity_mode")
+
+    
     state_dict = checkpoint['model']
     unwanted_prefix = '_orig_mod.'
     for k, v in list(state_dict.items()):
@@ -179,21 +200,21 @@ print("MODEL:")
 print(model)
 print("======================================")
 
-# Optimizer
+if sparsity_mode == "uniform":
+    sparsity_scheduler = SparsityScheduler(model, mode="uniform", start=sparsity_ratio['start'], end=sparsity_ratio['end'], total_steps=max_iters)
+if sparsity_mode == "grid":
+    sparsity_scheduler = SparsityScheduler(model, mode="grid", grid=sparsity_ratio)
+
 optimizer = model.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type=device.split(':')[0])
 if init_from == 'resume':
     optimizer.load_state_dict(checkpoint['optimizer'])
-checkpoint = None  # free mem
+checkpoint = None  
 
-# Optional Torch 2.0 compile
 if compile:
     print("compiling the model... (takes a ~minute)")
     model = torch.compile(model)
 
-raw_model = model  # for MFU calculations
-
-# ----------------------------------------------------------------------------
-# Helper functions
+raw_model = model  
 
 @torch.no_grad()
 def estimate_loss():
@@ -252,40 +273,55 @@ def measure_perplexity(split='val', batch_size=1):
     model.train()
     return ppl.item()
 
-# ----------------------------------------------------------------------------
-# Logging (optional W&B)
 wandb=None
 
 if wandb_log and  eval_only == False:
     import wandb
     wandb.init(project=wandb_project, name=wandb_run_name, config=config)
     wandb.watch(model, log="all", log_freq=100)
-    
-# ----------------------------------------------------------------------------
-# Training loop
 
 x, y = get_batch('train')
 t0 = time.time()
 local_iter_num = 0
 running_mfu = -1.0
 
+val_ppl_history = []
+early_stop = False
 
 ppl = []
 while True:
+    if sparsity_mode != "static":
+        sparsity_now = sparsity_scheduler(iter_num)
+        
     lr = get_lr(iter_num) if decay_lr else learning_rate
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
-    # Evaluate and checkpoint
     if iter_num % eval_interval == 0:
-        losses = estimate_loss()# GradScaler for mixed precision
+        
+        if wandb_log and eval_only == False and sparsity_mode != "static":
+            wandb.log({"sparsity_ratio": sparsity_now}, step=iter_num)
+            print(f"iter {iter_num}: sparsity={sparsity_now:.3f}")
+        
+            
+        losses = estimate_loss()  
         ppl_val = measure_perplexity(split='val', batch_size=8)
         ppl.append(ppl_val)
+        val_ppl_history.append(ppl_val)
+
+        if early_stop_mode and len(val_ppl_history) >= early_stop_patience:
+            recent = val_ppl_history[-early_stop_patience:]
+            if all(recent[i] > recent[i - 1] for i in range(1, early_stop_patience)):
+                print(
+                    f"Early stopping triggered: validation perplexity increased for the last {early_stop_patience} evals"
+                )
+                early_stop = True
+
         print(f"Strict perplexity over full val.bin: {ppl_val:.4f}")
         print(
             f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}"
         )
-        if wandb_log and  eval_only == False:
+        if wandb_log and eval_only == False:
             wandb.log(
                 {
                     "iter": iter_num,
@@ -296,7 +332,7 @@ while True:
                     "mfu": running_mfu * 100,
                 }
             )
-        if losses['val'] < best_val_loss or always_save_checkpoint:
+        if losses['val'] < best_val_loss and save_best_model:
             best_val_loss = losses['val']
             if iter_num > 0:
                 checkpoint = {
@@ -308,14 +344,28 @@ while True:
                     'config': config,
                 }
                 print(f"saving checkpoint to {out_dir}")
-                torch.save(checkpoint, os.path.join(out_dir, 'ckpt.pt'))
+                torch.save(checkpoint, os.path.join(out_dir, 'best_model.pt'))
+                
+        if always_save_checkpoint and iter_num > 0:
+            checkpoint = {
+                'model': raw_model.state_dict(),
+                'optimizer': optimizer.state_dict(),
+                'model_args': model_args,
+                'iter_num': iter_num,
+                'best_val_loss': best_val_loss,
+                'config': config,
+            }
+            print(f"saving checkpoint to {out_dir}")
+            torch.save(checkpoint, os.path.join(out_dir, f'ckpt_{iter_num}.pt'))
 
     if eval_only:
         ppl_val = measure_perplexity(split='val', batch_size=8)
         print(f"Strict perplexity over full val.bin: {ppl_val:.4f}")
         break
 
-    # Forward‑backward update with gradient accumulation
+    if early_stop:
+        break
+
     for micro_step in range(gradient_accumulation_steps):
         with ctx:
             logits, loss = model(x, y)
@@ -323,16 +373,25 @@ while True:
         x, y = get_batch('train')  # prefetch next batch
         scaler.scale(loss).backward()
 
-    # Gradient clipping
     if grad_clip != 0.0:
         scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
 
+    if save_gradients and iter_num % gradient_save_interval == 0 and iter_num > 0:
+        grad_snapshot = {
+            n: p.grad.detach().cpu()
+            for n, p in model.named_parameters()
+            if p.grad is not None
+        }
+        torch.save(grad_snapshot, os.path.join(grads_dir, f'grads_{iter_num}.pt'))
+        del grad_snapshot
+
+    
     scaler.step(optimizer)
     scaler.update()
     optimizer.zero_grad(set_to_none=True)
 
-    # Logging
+
     dt = time.time() - t0
     t0 = time.time()
     if iter_num % log_interval == 0:
@@ -349,7 +408,6 @@ while True:
     iter_num += 1
     local_iter_num += 1
 
-    # Terminate
     if iter_num > max_iters:
         break
         

@@ -119,7 +119,7 @@ class GPTConfig:
 
 class GPT(nn.Module):
 
-    def __init__(self, config, sparsity_ratio = 0.0, sparsity_type = "None"):
+    def __init__(self, config, sparsity_ratio = 0.0, sparsity_type = "None", mode = "all", custom_slice=None):
         super().__init__()
         assert config.vocab_size is not None
         assert config.block_size is not None
@@ -140,7 +140,7 @@ class GPT(nn.Module):
         self.transformer.wte.weight = self.lm_head.weight # https://paperswithcode.com/method/weight-tying
 
 
-        replace_linears_with_pruner(self, sparsity_ratio=sparsity_ratio, sparsity_type=sparsity_type)
+        replace_linears_with_pruner(self, sparsity_ratio=sparsity_ratio, sparsity_type=sparsity_type, mode=mode, custom_slice=custom_slice)
         
         # init all weights
         self.apply(self._init_weights)
