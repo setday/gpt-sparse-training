@@ -1,11 +1,7 @@
 #--------------------Common params----------------------#
 
-mode = "custom" # Mode of train (how many and which one of layers should be pruned). Avalibe: "all" or "custom"
+mode = "all" # Mode of train (how many and which one of layers should be pruned). Avalibe: "all" or "custom"
 custom_slice=slice(4, -5) # Slice of layers, that should be pruned (used if mode =='custom')
-
-n_layer = 6
-n_head = 6
-n_embd = 384
 
 dataset = 'wikitext'
 batch_size = 32
@@ -18,8 +14,8 @@ wandb_project = dataset + '_full_gpt_earlystopped' # change it if need
 wandb_run_name= 'name' #overwrited in run_all_config.sh
 
 
-sparsity_mode = "grid"
-sparsity_ratio = {0: 0.0, 50: 0.1, 100: 0.3, 250: 0.5, 300: 0.9} # overwrited in run_all_config.sh 
+sparsity_mode = "static"
+sparsity_ratio = 0.3 # overwrited in run_all_config.sh 
 # Avalible: 
 #    float: 0.3 if sparsity_mode = "static"
 #    dict - borders: {'start': 0.0, 'end': 0.5, 'total_steps': 100_000} if sparsity_mode = "uniform"
@@ -41,7 +37,7 @@ save_best_model = True # Should be saved best model to best_model.pt
 always_save_checkpoint = True # Should be saved all checkpoints like: ckpt_{iter_num}.pt
 
 
-learning_rate = 5e-1  # или даже 3e-4
+learning_rate = 5e-4  # или даже 3e-4
 max_iters = 500000
 lr_decay_iters = 5000 # make equal to max_iters usually
 min_lr = 1e-4 # learning_rate / 10 usually

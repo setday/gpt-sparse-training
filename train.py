@@ -151,11 +151,11 @@ if init_from == 'scratch':
     model_args['vocab_size'] = meta_vocab_size if meta_vocab_size is not None else 50304
     gptconf = GPTConfig(**model_args)
     if sparsity_mode == "uniform":
-        model = GPT(gptconf, sparsity_ratio['start'], sparsity_type)
+        model = GPT(gptconf, sparsity_ratio['start'], sparsity_type, mode, custom_slice)
     elif sparsity_mode == "grid":
-        model = GPT(gptconf, sparsity_ratio[0], sparsity_type)
+        model = GPT(gptconf, sparsity_ratio[0], sparsity_type, mode, custom_slice)
     elif sparsity_mode == "static":
-        model = GPT(gptconf, sparsity_ratio, sparsity_type)
+        model = GPT(gptconf, sparsity_ratio, sparsity_type, mode, custom_slice)
     else: 
         raise ValueError("Could not classify such sparsity_mode")
 elif init_from == 'resume':
@@ -169,11 +169,11 @@ elif init_from == 'resume':
     gptconf = GPTConfig(**model_args)
     
     if sparsity_mode == "uniform":
-        model = GPT(gptconf, sparsity_ratio['end'], sparsity_type)
+        model = GPT(gptconf, sparsity_ratio['end'], sparsity_type, mode, custom_slice)
     elif sparsity_mode == "grid":
-        model = GPT(gptconf, sparsity_ratio[max(sparsity_ratio)], sparsity_type)
+        model = GPT(gptconf, sparsity_ratio[max(sparsity_ratio)], sparsity_type, mode, custom_slice)
     elif sparsity_mode == "static":
-        model = GPT(gptconf, sparsity_ratio, sparsity_type)
+        model = GPT(gptconf, sparsity_ratio, sparsity_type, mode, custom_slice)
     else: 
         raise ValueError("Could not classify such sparsity_mode")
 
