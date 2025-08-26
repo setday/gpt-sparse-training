@@ -1,6 +1,6 @@
 #--------------------Common params----------------------#
 
-mode = "all" # Mode of train (how many and which one of layers should be pruned). Avalibe: "all" or "custom"
+mode = "custom" # Mode of train (how many and which one of layers should be pruned). Avalibe: "all" or "custom"
 custom_slice=slice(4, -5) # Slice of layers, that should be pruned (used if mode =='custom')
 
 dataset = 'wikitext'
@@ -10,7 +10,7 @@ batch_size = 32
 #---------------Train and validation params-------------#
 
 wandb_log = True # override via command line if you like
-wandb_project = dataset + '_full_gpt_earlystopped' # change it if need
+wandb_project = dataset + '_partically_gpt_earlystopped' # change it if need
 wandb_run_name= 'name' #overwrited in run_all_config.sh
 
 
@@ -45,7 +45,7 @@ beta2 = 0.99 # make a bit bigger because number of tokens per iter is small
 
 
 early_stop_mode = True
-early_stop_patience = 3 # number of consecutive evals with rising val loss
+early_stop_patience = 15 # number of consecutive evals with rising val loss
 
 compile = False # do not torch compile the model
 

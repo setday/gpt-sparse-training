@@ -66,7 +66,6 @@ run_once () {
   fi
 
   rm -f "${tmpfile}"
-  rm -rf "${out_dir}"
 
   # --- записываем в общий лог ----------------------------------------------
   {
@@ -81,7 +80,6 @@ run_once () {
 
 # базовый запуск
 
-run_once "orig" "0.0"
 
 # сетка
 for stype in "${TYPES[@]}"; do
@@ -89,5 +87,7 @@ for stype in "${TYPES[@]}"; do
     run_once "${stype}" "${sratio}"
   done
 done
+
+run_once "orig" "0.0"
 
 echo "Все эксперименты завершены. Итоги см. в ${LOGFILE}"

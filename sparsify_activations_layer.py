@@ -83,7 +83,6 @@ class LinearActivationsPruner(nn.Module):
         threshold = torch.kthvalue(flat, k).values
         return w.abs() >= threshold
 
-
     def forward(self, x: torch.Tensor) -> torch.Tensor: 
         ratio = self.sparsity_ratio
 

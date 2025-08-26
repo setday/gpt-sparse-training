@@ -311,7 +311,7 @@ while True:
 
         if early_stop_mode and len(val_ppl_history) >= early_stop_patience:
             recent = val_ppl_history[-early_stop_patience:]
-            if all(recent[i] > recent[i - 1] for i in range(1, early_stop_patience)):
+            if all(recent[i] >= recent[i-1] for i in range(1, early_stop_patience)):
                 print(
                     f"Early stopping triggered: validation perplexity increased for the last {early_stop_patience} evals"
                 )
