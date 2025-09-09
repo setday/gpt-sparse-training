@@ -37,7 +37,7 @@ dropout = 0.0  # for pretraining 0 is good, for finetuning try 0.1+
 bias = False  # use bias inside LayerNorm and Linear layers?
 # AdamW optimizer
 learning_rate = 6e-4  # max learning rate
-max_iters = 600_000  # total number of training iterations
+max_iters = 600000  # total number of training iterations
 weight_decay = 1e-1
 beta1 = 0.9
 beta2 = 0.95
@@ -45,10 +45,15 @@ grad_clip = 1.0  # clip gradients at this value, or disable if == 0.0
 # learning‑rate decay settings
 decay_lr = True  # whether to decay the learning rate
 warmup_iters = 2000  # warm‑up steps
-lr_decay_iters = 600_000  # should be ~= max_iters per Chinchilla
+lr_decay_iters = 600000  # should be ~= max_iters per Chinchilla
 min_lr = 6e-5  # ~= learning_rate/10 per Chinchilla
 sparsity_mode = "static"
-sparsity_type = "masked-activations-layer"
+sparsity_type = "masked-activations-layer" # "orig"
+sparsity_ratio = 0.2
+
+# HotFix потому что  забыли завести соответствующие переменные.
+mode: str = "all",  # "all", "exclude-first-last", or "custom"
+custom_slice = None
 
 save_best_model = True
 always_save_checkpoint = True
@@ -161,7 +166,7 @@ if init_from == 'scratch':
 elif init_from == 'resume':
     print(f"Resuming training from {out_dir}")
     ckpt_path = os.path.join(out_dir, eval_ckpt_name)
-    checkpoint = torch.load(ckpt_path, map_location=device)
+    checkpoint = torch.load(ckpt_path, map_location=device, weights_only=False)
     checkpoint_model_args = checkpoint['model_args']
     for k in ['n_layer', 'n_head', 'n_embd', 'block_size', 'bias', 'vocab_size']:
         model_args[k] = checkpoint_model_args[k]

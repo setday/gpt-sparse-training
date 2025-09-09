@@ -45,3 +45,14 @@ for arg in sys.argv[1:]:
             globals()[key] = attempt
         else:
             raise ValueError(f"Unknown config key: {key}")
+# Для другого способа вызывать скрипт, когда переменные  прямо добавляются в среду.
+if 'CONFIG' in globals():
+    config_file = globals()['CONFIG']
+    with open(config_file) as f:
+        print(f.read())
+    exec(open(config_file).read())
+if 'PARAMS' in globals():
+    print(type(globals()['PARAMS']))
+    print(globals()['PARAMS'])
+    for key,value in globals()['PARAMS'].items():
+        globals()[key] = value
