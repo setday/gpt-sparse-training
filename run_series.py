@@ -9,7 +9,7 @@ from time import time
 import subprocess
 from contextlib import redirect_stderr, redirect_stdout
 import io
-
+from teeoutput import TeeOutput
 
 os.environ['WANDB_MODE'] = 'offline'
 #os.environ["WANDB_DISABLED"] = "true"
@@ -20,7 +20,8 @@ os.environ['WANDB_MODE'] = 'offline'
 BASIC = {'sparsity_type': 'orig',
          'weight_decay': 0.8, 'learning_rate': 0.001, 'min_lr': 2e-05, 'lr_decay_iters': 2000}
 # Списки значений для перебора:
-SERIES = [("beta1", [0.95, 0.975, 0.9875, 0.875, 0.75, 0.5]),]
+SERIES = [("batch_size", [32, 16, 4, 2]),
+          ("beta1",[.95, .975, .9875, .995])]
 
 CONFIG="config/train_shakespeare_char.py" # "config/train_wikitext.py"
 LOG_PATH = Path(os.environ.get('LOG_PATH', f"log/series.{datetime.now().strftime('%Y%m%d_%H%M')}"))
@@ -29,7 +30,7 @@ LOGFILE=LOG_PATH/"results.log"
 
 
 # Обходим дерево вглубину
-PATH, EXPERIMENTS = [], [[]]
+PATH, EXPERIMENTS = [], []
 while True:
     if len(PATH) < len(SERIES): # Если нужно углубиться
         itr = iter(SERIES[len(PATH)][1])
@@ -44,7 +45,7 @@ while True:
                 del PATH[-1]
         if len(PATH) == 0:
             break
-
+EXPERIMENTS.append([])
 print("Expected experiments:\nBASIC:",BASIC, *[f"\n\t{params}" for params in EXPERIMENTS])
 
 def run_once (**kargs):
@@ -58,9 +59,12 @@ def run_once (**kargs):
     params.update(kargs)
     train_global = {'CONFIG':CONFIG, 'PARAMS':params}
     stdout_buffer, stderr_buffer = io.StringIO(), io.StringIO()
+    original_stdout,original_stderr = sys.stdout,sys.stderr
+    sys.stdout, sys.stderr = TeeOutput(original_stdout, stdout_buffer),TeeOutput(original_stderr, stderr_buffer)
     start_time = time()
-    with redirect_stdout(stdout_buffer), redirect_stderr(stderr_buffer):
-        exec(open('train.py').read(), train_global)
+    #with redirect_stdout(stdout_buffer), redirect_stderr(stderr_buffer):
+    exec(open('train.py').read(), train_global)
+    sys.stdout,sys.stderr = original_stdout, original_stderr
     print('spended: ', time()-start_time)
     with open(LOG_PATH/run_name/"train.log", 'a', encoding='utf-8') as file:
         file.write(f"spended: {time()-start_time}\n")
@@ -76,9 +80,12 @@ def run_once (**kargs):
     params.update(kargs)
     val_global = {'CONFIG':CONFIG, 'PARAMS':params}
     stdout_buffer, stderr_buffer = io.StringIO(), io.StringIO()
+    original_stdout,original_stderr = sys.stdout,sys.stderr
+    sys.stdout, sys.stderr = TeeOutput(original_stdout, stdout_buffer),TeeOutput(original_stderr, stderr_buffer)
     start_time = time()
-    with redirect_stdout(stdout_buffer), redirect_stderr(stderr_buffer):
-        exec(open('train.py').read(), val_global)
+    #with redirect_stdout(stdout_buffer), redirect_stderr(stderr_buffer):
+    exec(open('train.py').read(), val_global)
+    sys.stdout,sys.stderr = original_stdout, original_stderr
     print('spended: ', time()-start_time)
     with open(LOG_PATH/run_name/"train.log", 'a', encoding='utf-8') as file:
         file.write(f"spended: {time()-start_time}\n")
