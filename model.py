@@ -10,6 +10,7 @@ https://github.com/huggingface/transformers/blob/main/src/transformers/models/gp
 import math
 import inspect
 from dataclasses import dataclass
+from typing import Literal
 
 import torch
 import torch.nn as nn
@@ -81,14 +82,21 @@ class MLP(nn.Module):
 
     def __init__(self, config):
         super().__init__()
-        self.c_fc    = nn.Linear(config.n_embd, 4 * config.n_embd, bias=config.bias)
-        self.gelu    = nn.GELU()
-        self.c_proj  = nn.Linear(4 * config.n_embd, config.n_embd, bias=config.bias)
-        self.dropout = nn.Dropout(config.dropout)
+
+        activation_func_map = {
+            "gelu": nn.GELU,
+            "relu": nn.ReLU,
+            "relu^2": lambda: lambda x: F.relu(x)**2,
+        }
+        
+        self.c_fc       = nn.Linear(config.n_embd, 4 * config.n_embd, bias=config.bias)
+        self.activation = activation_func_map.get(config.activation_function, nn.GELU)()
+        self.c_proj     = nn.Linear(4 * config.n_embd, config.n_embd, bias=config.bias)
+        self.dropout    = nn.Dropout(config.dropout)
 
     def forward(self, x):
         x = self.c_fc(x)
-        x = self.gelu(x)
+        x = self.activation(x)
         x = self.c_proj(x)
         x = self.dropout(x)
         return x
@@ -117,6 +125,8 @@ class GPTConfig:
     dropout: float = 0.0
     bias: bool = True # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
 
+    activation_function: Literal["gelu", "relu", "relu^2"] = "gelu" # the non-linear activation function in the MLP block
+
 class GPT(nn.Module):
 
     def __init__(self, config, sparsity_ratio = 0.0, sparsity_type = "None", mode = "all", custom_slice=None):
@@ -140,7 +150,13 @@ class GPT(nn.Module):
         self.transformer.wte.weight = self.lm_head.weight # https://paperswithcode.com/method/weight-tying
 
 
-        replace_linears_with_pruner(self, sparsity_ratio=sparsity_ratio, sparsity_type=sparsity_type, mode=mode, custom_slice=custom_slice)
+        self.pruned_layers = replace_linears_with_pruner(
+            self,
+            sparsity_ratio=sparsity_ratio,
+            sparsity_type=sparsity_type,
+            mode=mode,
+            custom_slice=custom_slice
+        )
         
         # init all weights
         self.apply(self._init_weights)

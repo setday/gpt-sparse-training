@@ -1,6 +1,7 @@
 import os
 from contextlib import nullcontext
-from typing import Callable, Optional
+from typing import Callable, List, Optional, Literal
+from dataclasses import dataclass, field
 
 from tqdm import tqdm
 
@@ -10,7 +11,28 @@ from torch.amp.grad_scaler import GradScaler
 from torch.amp.autocast_mode import autocast
 
 from .utils.loader import prepare_random_loader, prepare_sequential_loader
+from .utils.light_visualizer import visualize_statistics
 
+
+@dataclass
+class TrainingStatistics:
+    lr_history: List[float] = field(default_factory=list)
+    sparsity_history: List[float] = field(default_factory=list)
+
+    val_loss_history: List[float] = field(default_factory=list)
+    val_ppl_history: List[float] = field(default_factory=list)
+
+    train_loss_history: List[float] = field(default_factory=list)
+
+    # Training steps at which the corresponding history entry was recorded
+
+    lr_history_steps: List[int] = field(default_factory=list)
+    sparsity_history_steps: List[int] = field(default_factory=list)
+    val_history_steps: List[int] = field(default_factory=list)
+    train_history_steps: List[int] = field(default_factory=list)
+
+    def visualize(self, directory: str):
+        visualize_statistics(directory, self)
 
 class Trainer:
     def __init__(self, model, optimizer: torch.optim.Optimizer, dtype=torch.bfloat16, device='cuda'):
@@ -47,7 +69,7 @@ class Trainer:
         val_loss = sum(
             self.evaluate_step_loss(x, y)[1]
             for x, y in prepare_random_loader(data, batch_size, 10, self.model.config.block_size, self.device)
-        ) / batch_size
+        ) / 10
         
         # Calculate perplexity
         rows_count = len(data) // self.model.config.block_size - 1
@@ -62,13 +84,17 @@ class Trainer:
         ppl_val = np.exp(total_loss / rows_count / seq_len)
 
         return val_loss, ppl_val
-    
-    def train_step(self, data: np.ndarray, mini_batch_size: int, accum_steps: int, grad_clip=1.0):
+
+    def train_step(self, data: np.ndarray, mini_batch_size: int, accum_steps: int, grad_clip=1.0, l1_target: Optional[Literal["weight", "input", "output"]] = None, l1_lambda: float = 1e-5):
         self.optimizer.zero_grad(set_to_none=True)
 
         train_loss = 0.0
         for x, y in prepare_random_loader(data, mini_batch_size, accum_steps, self.model.config.block_size, self.device):
-            loss = self.train_step_loss(x, y) / accum_steps
+            loss = self.train_step_loss(x, y)
+            if l1_target is not None:
+                for model_pruned_layer in self.model.pruned_layers:
+                    loss = loss + model_pruned_layer.get_l1_loss(l1_target=l1_target) * l1_lambda
+            loss = loss / accum_steps
             train_loss += loss.item()
             self.scaler.scale(loss).backward()
 
@@ -121,32 +147,39 @@ class Trainer:
             checkpoint_dir: Optional[str] = None,
             model_save_interval: int = 0,
             save_gradients: bool = False,
+
+            l1_target: Optional[Literal["weight", "input", "output"]] = None,
+            l1_lambda: float = 1e-5,
             
             wandb=None,
-    ):
+    ) -> TrainingStatistics:
         assert batch_size % mini_batch_size == 0, "batch_size must be divisible by mini_batch_size"
         
         accum_steps = batch_size // mini_batch_size
 
         train_data, val_data = train_data.astype(np.int64), val_data.astype(np.int64)
 
-        val_history = []
+        statistics = TrainingStatistics()
         val_best = float('inf')
 
         self.model.train()
 
-        current_lr, current_sparsity = float('nan'), float('nan')
-        prev_val_loss, prev_ppl_val = float('nan'), float('nan')
+        current_lr, current_sparsity = 'N/A', 'N/A'
+        prev_val_loss, prev_ppl_val = 'N/A', 'N/A'
 
         progress = tqdm(range(start_step, steps), desc="Training", unit="step", colour="green")
         for step in progress:
             if sparsity_scheduler is not None:
                 current_sparsity = sparsity_scheduler(step)
+                statistics.sparsity_history.append(current_sparsity)
+                statistics.sparsity_history_steps.append(step)
                 if wandb:
                     wandb.log({"sparsity_ratio": current_sparsity}, step=step)
 
             if lr_scheduler is not None:
                 current_lr = lr_scheduler(step)
+                statistics.lr_history.append(current_lr)
+                statistics.lr_history_steps.append(step)
                 for param_group in self.optimizer.param_groups:
                     param_group['lr'] = current_lr
                 if wandb:
@@ -156,7 +189,10 @@ class Trainer:
                 self.model.eval()
                 
                 prev_val_loss, prev_ppl_val = self.evaluation_step(val_data, mini_batch_size)
-                
+                statistics.val_loss_history.append(prev_val_loss)
+                statistics.val_ppl_history.append(prev_ppl_val)
+                statistics.val_history_steps.append(step)
+
                 self.model.train()
     
                 progress.write(f"Step {step+1}/{steps}, Validation Loss: {prev_val_loss:.4f}, Validation Perplexity: {prev_ppl_val:.4f}")
@@ -181,23 +217,29 @@ class Trainer:
                         save_gradients
                     )
 
-                val_history.append(prev_ppl_val)
-                if early_stop_patience > 0 and len(val_history) >= early_stop_patience:
-                    recent = val_history[-early_stop_patience:]
+                if early_stop_patience > 0 and len(statistics.val_ppl_history) >= early_stop_patience:
+                    recent = statistics.val_ppl_history[-early_stop_patience:]
                     if all(recent[i] >= recent[i-1] for i in range(1, early_stop_patience)):
                         progress.write(
                             f"Early stopping triggered: validation perplexity increased for the last {early_stop_patience} evals"
                         )
                         break
 
-            train_loss = self.train_step(train_data, mini_batch_size, accum_steps, grad_clip)
+            train_loss = self.train_step(train_data, mini_batch_size, accum_steps, grad_clip, l1_target, l1_lambda)
+            statistics.train_loss_history.append(train_loss)
+            statistics.train_history_steps.append(step)
 
             progress.set_postfix({
                 "lr": current_lr,
                 "sparsity": current_sparsity,
-                "train_loss": train_loss,
-                "val_loss": prev_val_loss,
-                "val_ppl": prev_ppl_val,
+                "train/loss": train_loss,
+                "val/loss": prev_val_loss,
+                "val/ppl": prev_ppl_val,
             }, refresh=False)
             if wandb is not None:
                 wandb.log({"train/loss": train_loss}, step=step+1)
+
+        progress.close()
+        self.model.eval()
+
+        return statistics

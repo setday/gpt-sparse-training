@@ -1,15 +1,16 @@
 from __future__ import annotations
 
+from typing import Literal, Optional, List
+
 import torch
 from torch import nn
-from typing import Optional
 
 __all__ = [
-    "LinearActivationsPruner",
+    "LinearPruner",
     "replace_linears_with_pruner",
 ]
 
-class LinearActivationsPruner(nn.Module):
+class LinearPruner(nn.Module):
 
     def __init__(
         self,
@@ -26,6 +27,9 @@ class LinearActivationsPruner(nn.Module):
         self.sparsity_type = sparsity_type
         self.sparsity_ratio = float(sparsity_ratio)
         self.name = name
+
+        self.in_l1 = None
+        self.out_l1 = None
 
         self.weight = nn.Parameter(torch.empty(out_features, in_features))
         nn.init.kaiming_uniform_(self.weight, a=5 ** 0.5)
@@ -86,6 +90,8 @@ class LinearActivationsPruner(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor: 
         ratio = self.sparsity_ratio
 
+        self.in_l1 = torch.nn.functional.l1_loss(x, torch.zeros_like(x), size_average=None, reduce=None, reduction='mean')
+
         if self.sparsity_type == "masked-activations-layer":
             mask = self._compute_mask_rowwise(x, ratio).to(x.dtype)
             x = x * mask
@@ -99,7 +105,28 @@ class LinearActivationsPruner(nn.Module):
         out = torch.matmul(x, weight.t())
         if self.bias is not None:
             out = out + self.bias
+
+        self.out_l1 = torch.nn.functional.l1_loss(out, torch.zeros_like(out), size_average=None, reduce=None, reduction='mean')
+
         return out
+    
+    def get_l1_loss(self, l1_target: Literal["weight", "input", "output"] = "weight") -> torch.Tensor:
+        if l1_target == "weight":
+            return torch.nn.functional.l1_loss(self.weight, torch.zeros_like(self.weight), size_average=None, reduce=None, reduction='mean')
+        elif l1_target == "input":
+            if self.in_l1 is None:
+                raise ValueError("in_l1 is not set. Run a forward pass first.")
+            return self.in_l1
+        elif l1_target == "output":
+            if self.out_l1 is None:
+                raise ValueError("out_l1 is not set. Run a forward pass first.")
+            return self.out_l1
+        else:
+            raise ValueError("l1_target must be 'weight', 'input', or 'output'")
+        
+    def remove_saved_l1(self):
+        self.in_l1 = None
+        self.out_l1 = None
 
     def set_sparsity_ratio(self, sparsity_ratio: float) -> None:
         self.sparsity_ratio = float(sparsity_ratio)
@@ -111,7 +138,7 @@ class LinearActivationsPruner(nn.Module):
         sparsity_type: Optional[str] = None,
         sparsity_ratio: float = 0.0,
         name: Optional[str] = None,
-    ) -> "LinearActivationsPruner":
+    ) -> LinearPruner:
         pruner = cls(
             orig_linear.in_features,
             orig_linear.out_features,
@@ -127,7 +154,7 @@ class LinearActivationsPruner(nn.Module):
 
 def set_sparsity_ratio(model: nn.Module, ratio: float):
     for m in model.modules():
-        if isinstance(m, LinearActivationsPruner):
+        if isinstance(m, LinearPruner):
             m.set_sparsity_ratio(ratio)   # просто перезаписываем атрибут, его изменение не влияет на поведение оптимизатора
 
 
@@ -137,18 +164,12 @@ def replace_linears_with_pruner(
     sparsity_type: str = "masked-activations-layer",
     mode: str = "all",  # "all", "exclude-first-last", or "custom"
     custom_slice: Optional[slice] = None,  # for "custom" mode
-):
-    linear_layers = []
-
-    def collect_linears(m: nn.Module, prefix=""):
-        for name, child in m.named_children():
-            full_name = f"{prefix}.{name}" if prefix else name
-            if isinstance(child, nn.Linear):
-                linear_layers.append((full_name, child))
-            elif isinstance(child, nn.Module):
-                collect_linears(child, prefix=full_name)
-
-    collect_linears(module)
+) -> List[LinearPruner]:
+    linear_layers = [
+        (name, layer)
+        for name, layer in module.named_modules()
+        if isinstance(layer, nn.Linear) or isinstance(layer, LinearPruner)
+    ]
 
     if mode == "all":
         to_replace = set(name for name, _ in linear_layers)
@@ -159,26 +180,27 @@ def replace_linears_with_pruner(
             raise ValueError("custom_slice must be provided when mode='custom'")
         to_replace = set(name for name, _ in linear_layers[custom_slice])
     else:
-        to_replace = set()
+        raise ValueError("mode must be 'all', 'exclude-first-last', or 'custom'")
 
-    def replace(m: nn.Module, prefix=""):
-        for name, child in m.named_children():
-            full_name = f"{prefix}.{name}" if prefix else name
+    resulting_layers = []
+    
+    for name, layer in module.named_modules():
+        for child_name, child in layer.named_children():
+            full_name = f"{name}.{child_name}" if name else child_name
 
             if isinstance(child, nn.Linear) and full_name in to_replace:
-                pruner = LinearActivationsPruner.from_original(
+                pruner = LinearPruner.from_original(
                     child,
                     sparsity_type=sparsity_type,
                     sparsity_ratio=sparsity_ratio,
                     name=full_name,
                 ).to(child.weight.device)
-                setattr(m, name, pruner)
+                setattr(layer, child_name, pruner)
+                resulting_layers.append(pruner)
 
-            elif isinstance(child, LinearActivationsPruner):
+            elif isinstance(child, LinearPruner):
                 child.set_sparsity_ratio(sparsity_ratio)
                 child.sparsity_type = sparsity_type
+                resulting_layers.append(child)
 
-            else:
-                replace(child, prefix=full_name)
-
-    replace(module)
+    return resulting_layers

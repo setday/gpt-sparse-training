@@ -247,8 +247,10 @@ if not eval_only:
         best_model_dir=out_dir if save_best_model else None,
         checkpoint_dir=out_dir if always_save_checkpoint else None,
 
+        l1_target="weight",
+
         wandb=wandb,
-    )
+    ).visualize(os.path.join(out_dir, 'plots'))
 else:
     print("Running evaluation only")
     val_loss, ppl_val = trainer.evaluation_step(val_data, batch_size)

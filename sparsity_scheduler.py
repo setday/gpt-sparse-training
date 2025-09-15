@@ -2,7 +2,6 @@ from typing import Dict, Sequence, Tuple, Optional, Union
 
 import torch.nn as nn
 
-from sparsify_activations_layer import LinearActivationsPruner
 
 class SparsityScheduler:
     def __init__(
