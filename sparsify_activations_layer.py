@@ -20,6 +20,9 @@ class LinearPruner(nn.Module):
         sparsity_type: Optional[str] = None,
         sparsity_ratio: float = 0.0,
         name: Optional[str] = None,
+
+        debug_info: bool = False,
+        l1_calculation: bool = False,
     ) -> None:
         super().__init__()
         self.in_features = in_features
@@ -28,8 +31,8 @@ class LinearPruner(nn.Module):
         self.sparsity_ratio = float(sparsity_ratio)
         self.name = name
 
-        self.in_l1 = None
-        self.out_l1 = None
+        self.debug_info = debug_info
+        self.l1_calculation = l1_calculation
 
         self.weight = nn.Parameter(torch.empty(out_features, in_features))
         nn.init.kaiming_uniform_(self.weight, a=5 ** 0.5)
@@ -38,6 +41,10 @@ class LinearPruner(nn.Module):
             self.bias = nn.Parameter(torch.zeros(out_features))
         else:
             self.register_parameter("bias", None)
+
+        self.in_l1, self.out_l1 = None, None
+        self.params_count = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        self.real_weight_sparsity, self.real_input_sparsity, self.real_output_sparsity = None, None, None
 
     def __repr__(self) -> str:  
         extra = (
@@ -90,23 +97,27 @@ class LinearPruner(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor: 
         ratio = self.sparsity_ratio
 
-        self.in_l1 = torch.nn.functional.l1_loss(x, torch.zeros_like(x), size_average=None, reduce=None, reduction='mean')
-
         if self.sparsity_type == "masked-activations-layer":
-            mask = self._compute_mask_rowwise(x, ratio).to(x.dtype)
-            x = x * mask
+            a_mask = self._compute_mask_rowwise(x, ratio).to(x.dtype)
+            x = x * a_mask
 
+        weight = self.weight
         if self.sparsity_type == "masked-weights-layer":
-            w_mask = self._compute_mask_rowwise(self.weight, ratio).to(self.weight.dtype)
-            weight = self.weight * w_mask
-        else:
-            weight = self.weight
+            w_mask = self._compute_mask_rowwise(weight, ratio).to(weight.dtype)
+            weight = weight * w_mask
 
         out = torch.matmul(x, weight.t())
         if self.bias is not None:
             out = out + self.bias
 
-        self.out_l1 = torch.nn.functional.l1_loss(out, torch.zeros_like(out), size_average=None, reduce=None, reduction='mean')
+        if self.l1_calculation:
+            self.in_l1 = torch.nn.functional.l1_loss(x, torch.zeros_like(x), size_average=None, reduce=None, reduction='mean')
+            self.out_l1 = torch.nn.functional.l1_loss(out, torch.zeros_like(out), size_average=None, reduce=None, reduction='mean')
+
+        if self.debug_info:
+            self.real_input_sparsity = (x == 0).float().mean().item()
+            self.real_output_sparsity = (out == 0).float().mean().item()
+            self.real_weight_sparsity = (weight == 0).float().mean().item()
 
         return out
     
@@ -115,18 +126,14 @@ class LinearPruner(nn.Module):
             return torch.nn.functional.l1_loss(self.weight, torch.zeros_like(self.weight), size_average=None, reduce=None, reduction='mean')
         elif l1_target == "input":
             if self.in_l1 is None:
-                raise ValueError("in_l1 is not set. Run a forward pass first.")
+                raise ValueError("in_l1 is not set. Run a forward pass first and check l1_calculation option.")
             return self.in_l1
         elif l1_target == "output":
             if self.out_l1 is None:
-                raise ValueError("out_l1 is not set. Run a forward pass first.")
+                raise ValueError("out_l1 is not set. Run a forward pass first and check l1_calculation option.")
             return self.out_l1
         else:
             raise ValueError("l1_target must be 'weight', 'input', or 'output'")
-        
-    def remove_saved_l1(self):
-        self.in_l1 = None
-        self.out_l1 = None
 
     def set_sparsity_ratio(self, sparsity_ratio: float) -> None:
         self.sparsity_ratio = float(sparsity_ratio)
@@ -146,6 +153,9 @@ class LinearPruner(nn.Module):
             sparsity_type=sparsity_type,
             sparsity_ratio=sparsity_ratio,
             name=name,
+
+            debug_info=True,
+            l1_calculation=True,
         )
         pruner.weight.data.copy_(orig_linear.weight.data)
         if orig_linear.bias is not None:

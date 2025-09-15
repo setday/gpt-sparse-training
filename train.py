@@ -35,6 +35,7 @@ n_head = 12
 n_embd = 768
 dropout = 0.0  # for pretraining 0 is good, for finetuning try 0.1+
 bias = False  # use bias inside LayerNorm and Linear layers?
+activation_function = "gelu"  # "gelu", "relu", "relu^2"
 # AdamW optimizer
 learning_rate = 6e-4  # max learning rate
 max_iters = 600000  # total number of training iterations
@@ -122,6 +123,7 @@ model_args = dict(
     bias=bias,
     vocab_size=None,
     dropout=dropout,
+    activation_function=activation_function,
 )
 
 checkpoint = None
@@ -195,6 +197,9 @@ if sparsity_mode == "uniform":
 if sparsity_mode == "grid":
     assert isinstance(sparsity_ratio, list), "For grid sparsity, sparsity_ratio should be a list of sparsity levels."
     sparsity_scheduler = SparsityScheduler(model, mode="grid", grid=sparsity_ratio)
+if sparsity_mode == "static":
+    assert isinstance(sparsity_ratio, float), "For static sparsity, sparsity_ratio should be a single float value."
+    sparsity_scheduler = SparsityScheduler(model, mode="static", start=sparsity_ratio, end=sparsity_ratio, total_steps=max_iters)
 
 optimizer = model.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type=device.split(':')[0])
 if checkpoint is not None:

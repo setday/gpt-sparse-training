@@ -18,6 +18,12 @@ from torch.nn import functional as F
 from sparsify_activations_layer import replace_linears_with_pruner
 
 
+class ReLU2(nn.ReLU):
+    def forward(self, input):
+        relu = super().forward(input)
+        return relu * relu
+
+
 class LayerNorm(nn.Module):
     """ LayerNorm but with an optional bias. PyTorch doesn't support simply bias=False """
 
@@ -86,7 +92,7 @@ class MLP(nn.Module):
         activation_func_map = {
             "gelu": nn.GELU,
             "relu": nn.ReLU,
-            "relu^2": lambda: lambda x: F.relu(x)**2,
+            "relu^2": ReLU2,
         }
         
         self.c_fc       = nn.Linear(config.n_embd, 4 * config.n_embd, bias=config.bias)
