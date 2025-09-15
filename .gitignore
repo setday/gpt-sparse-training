@@ -3,3 +3,5 @@
 /data/shakespeare_char/meta.pkl
 /data/shakespeare_char/train.bin
 /data/shakespeare_char/val.bin
+
+/out-*
