@@ -1,5 +1,6 @@
 import os
 from contextlib import nullcontext
+from typing import Callable, Optional
 
 from tqdm import tqdm
 
@@ -97,37 +98,37 @@ class Trainer:
             'best_val_loss': best_val_loss,
             'config': model.config,
         }
-
-        print(f"saving checkpoint to {path}")
         torch.save(checkpoint, path)
     
     def train(
             self,
 
-            train_data,
-            val_data,
-            
-            eval_interval = 100,
-            steps = 1_000,
-            start_step = 0,
-            batch_size = 64,
-            mini_batch_size = 16,
-            grad_clip = 1.0,
-            early_stop_patience = 0,
-            
-            sparsity_scheduler = None,
-            lr_scheduler = None,
+            train_data: np.ndarray,
+            val_data: np.ndarray,
 
-            best_model_dir = None,
-            checkpoint_dir = None,
-            model_save_interval = 0,
-            save_gradients = False,
+            eval_interval: int = 100,
+            steps: int = 1_000,
+            start_step: int = 0,
+            batch_size: int = 64,
+            mini_batch_size: int = 16,
+            grad_clip: float = 1.0,
+            early_stop_patience: int = 0,
+            
+            sparsity_scheduler: Optional[Callable[[int], float]] = None,
+            lr_scheduler: Optional[Callable[[int], float]] = None,
+
+            best_model_dir: Optional[str] = None,
+            checkpoint_dir: Optional[str] = None,
+            model_save_interval: int = 0,
+            save_gradients: bool = False,
             
             wandb=None,
     ):
         assert batch_size % mini_batch_size == 0, "batch_size must be divisible by mini_batch_size"
         
         accum_steps = batch_size // mini_batch_size
+
+        train_data, val_data = train_data.astype(np.int64), val_data.astype(np.int64)
 
         val_history = []
         val_best = float('inf')
@@ -137,9 +138,9 @@ class Trainer:
         current_lr, current_sparsity = float('nan'), float('nan')
         prev_val_loss, prev_ppl_val = float('nan'), float('nan')
 
-        progress = tqdm(range(start_step, steps), desc="Training", unit="step")
+        progress = tqdm(range(start_step, steps), desc="Training", unit="step", colour="green")
         for step in progress:
-            if sparsity_scheduler and self.model.sparsity_mode != "static":
+            if sparsity_scheduler is not None:
                 current_sparsity = sparsity_scheduler(step)
                 if wandb:
                     wandb.log({"sparsity_ratio": current_sparsity}, step=step)
@@ -158,7 +159,7 @@ class Trainer:
                 
                 self.model.train()
     
-                print(f"Step {step+1}/{steps}, Validation Loss: {prev_val_loss:.4f}, Validation Perplexity: {prev_ppl_val:.4f}")
+                progress.write(f"Step {step+1}/{steps}, Validation Loss: {prev_val_loss:.4f}, Validation Perplexity: {prev_ppl_val:.4f}")
                 if wandb is not None:
                     wandb.log({"val/loss": prev_val_loss, "val/perplexity": prev_ppl_val}, step=step+1)
 
@@ -184,7 +185,7 @@ class Trainer:
                 if early_stop_patience > 0 and len(val_history) >= early_stop_patience:
                     recent = val_history[-early_stop_patience:]
                     if all(recent[i] >= recent[i-1] for i in range(1, early_stop_patience)):
-                        print(
+                        progress.write(
                             f"Early stopping triggered: validation perplexity increased for the last {early_stop_patience} evals"
                         )
                         break

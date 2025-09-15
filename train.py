@@ -68,7 +68,6 @@ eval_ckpt_name = "best_model.pt"
 
 save_gradients = False
 gradient_save_interval = 250
-grads_dir = "grads"
 
 # system
 device = 'cuda' if torch.cuda.is_available() else 'cpu'  # 'cpu', 'cuda', 'cuda:0', etc.
@@ -89,7 +88,6 @@ config = {k: globals()[k] for k in config_keys}  # handy for logging
 
 # Set up reproducibility and I/O
 os.makedirs(out_dir, exist_ok=True)
-os.makedirs(grads_dir, exist_ok=True)
 seed_offset = 0
 
 torch.manual_seed(1337 + seed_offset)

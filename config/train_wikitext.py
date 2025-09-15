@@ -29,7 +29,6 @@ eval_iters = 200
 
 gradient_accumulation_steps = 1
 
-grads_dir = "grads"
 save_gradients = False
 gradient_save_interval = 250 
 
