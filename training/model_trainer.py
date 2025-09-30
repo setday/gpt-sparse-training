@@ -53,7 +53,7 @@ class Trainer:
     def evaluate_step_loss(self, x: torch.Tensor, y: torch.Tensor) -> tuple[torch.Tensor, float]:
         with self.ctx:
             logits, loss = self.model(x, y)
-        return logits, loss.item()
+        return logits, loss
 
     def backward_pass(self, grad_clip=1.0):
         if grad_clip != 0.0:
@@ -66,22 +66,33 @@ class Trainer:
     @torch.no_grad()
     def evaluation_step(self, data: np.ndarray, batch_size=16):
         # Calculate validation loss
-        val_loss = sum(
-            self.evaluate_step_loss(x, y)[1]
-            for x, y in prepare_random_loader(data, batch_size, 10, self.model.config.block_size, self.device)
-        ) / 10
-        
+        loss_steps = 10
+
+        val_loss_loader = prepare_random_loader(data, batch_size, loss_steps, self.model.config.block_size, self.device)
+        val_loss = torch.tensor(0.0, device=self.device)
+        for x, y in val_loss_loader:
+            _, loss = self.evaluate_step_loss(x, y)
+            val_loss += loss
+        val_loss = (val_loss / loss_steps).item()
+
         # Calculate perplexity
         rows_count = len(data) // self.model.config.block_size - 1
         seq_len = self.model.config.block_size - 1
-        total_loss = sum(
-            torch.nn.functional.cross_entropy(
-                self.evaluate_step_loss(x, y)[0][:, :-1, :].contiguous().flatten(0, -2),
-                y[:, :-1].reshape(-1), reduction='sum',
-            ).item()
-            for x, y in prepare_sequential_loader(data, batch_size, self.model.config.block_size, self.device)
-        )
-        ppl_val = np.exp(total_loss / rows_count / seq_len)
+
+        ppl_val_loader = prepare_sequential_loader(data, batch_size, self.model.config.block_size, self.device)
+        total_loss = torch.tensor(0.0, device=self.device)
+        for x, y in ppl_val_loader:
+            logits, _ = self.evaluate_step_loss(x, y)
+
+            logits = logits[:, :-1, :].contiguous()
+            targets = y[:, :-1]
+
+            total_loss += torch.nn.functional.cross_entropy(
+                logits.view(-1, logits.size(-1)),
+                targets.reshape(-1),
+                reduction='sum',
+            )
+        ppl_val = torch.exp(total_loss / rows_count / seq_len).item()
 
         return val_loss, ppl_val
 
@@ -89,14 +100,18 @@ class Trainer:
         self.optimizer.zero_grad(set_to_none=True)
 
         train_loss = 0.0
+        l1_train_loss = 0.0
         for x, y in prepare_random_loader(data, mini_batch_size, accum_steps, self.model.config.block_size, self.device):
             loss = self.train_step_loss(x, y)
+            l1_loss = torch.tensor(0.0, device=loss.device)
             if l1_target is not None:
                 for model_pruned_layer in self.model.pruned_layers:
-                    loss = loss + model_pruned_layer.get_l1_loss(l1_target=l1_target) * l1_lambda
-            loss = loss / accum_steps
-            train_loss += loss.item()
+                    l1_loss += model_pruned_layer.get_l1_loss(l1_target=l1_target) * l1_lambda
+            loss = (loss + l1_loss) / accum_steps
             self.scaler.scale(loss).backward()
+            
+            train_loss += loss.item()
+            l1_train_loss += l1_loss.item()
 
         self.backward_pass(grad_clip)
 
@@ -148,7 +163,7 @@ class Trainer:
             model_save_interval: int = 0,
             save_gradients: bool = False,
 
-            l1_target: Optional[Literal["weight", "input", "output"]] = None,
+            l1_target: Optional[Literal["weight", "input", "output", "none"]] = None,
             l1_lambda: float = 1e-5,
             
             wandb=None,
@@ -157,15 +172,14 @@ class Trainer:
         
         accum_steps = batch_size // mini_batch_size
 
-        train_data, val_data = train_data.astype(np.int64), val_data.astype(np.int64)
-
         statistics = TrainingStatistics()
         val_best = float('inf')
 
         self.model.train()
 
-        current_lr, current_sparsity = 'N/A', 'N/A'
-        prev_val_loss, prev_ppl_val = 'N/A', 'N/A'
+        current_lr, current_sparsity = float('nan'), float('nan')
+        prev_val_loss, prev_ppl_val = float('nan'), float('nan')
+        weight_sparsity, input_sparsity, output_sparsity = float('nan'), float('nan'), float('nan')
 
         progress = tqdm(range(start_step, steps), desc="Training", unit="step", colour="green")
         for step in progress:
@@ -231,10 +245,9 @@ class Trainer:
 
             progress.set_postfix({
                 "lr": current_lr,
-                "sparsity": current_sparsity,
-                "train/loss": train_loss,
-                "val/loss": prev_val_loss,
-                "val/ppl": prev_ppl_val,
+                "sparsity:expected|real": f"{current_sparsity:.3f}|{weight_sparsity:.3f}/{input_sparsity:.3f}/{output_sparsity:.3f}",
+                "train:loss|l1": f"{train_loss:.4f}|{l1_train_loss:.4f}",
+                "val:loss|ppl": f"{prev_val_loss:.4f}|{prev_ppl_val:.4f}",
             }, refresh=False)
             if wandb is not None:
                 wandb.log({"train/loss": train_loss}, step=step+1)

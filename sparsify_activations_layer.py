@@ -10,6 +10,8 @@ __all__ = [
     "replace_linears_with_pruner",
 ]
 
+SparsityType = Literal["masked-activations-layer", "masked-weights-layer", "none"]
+
 class LinearPruner(nn.Module):
 
     def __init__(
@@ -17,7 +19,7 @@ class LinearPruner(nn.Module):
         in_features: int,
         out_features: int,
         bias: bool = True,
-        sparsity_type: Optional[str] = None,
+        sparsity_type: Optional[SparsityType] = None,
         sparsity_ratio: float = 0.0,
         name: Optional[str] = None,
 
@@ -27,7 +29,7 @@ class LinearPruner(nn.Module):
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
-        self.sparsity_type = sparsity_type
+        self.sparsity_type = sparsity_type if sparsity_type != "none" else None
         self.sparsity_ratio = float(sparsity_ratio)
         self.name = name
 
@@ -95,24 +97,23 @@ class LinearPruner(nn.Module):
         return w.abs() >= threshold
 
     def forward(self, x: torch.Tensor) -> torch.Tensor: 
-        ratio = self.sparsity_ratio
-
+        x_ = x
         if self.sparsity_type == "masked-activations-layer":
             a_mask = self._compute_mask_rowwise(x, ratio).to(x.dtype)
-            x = x * a_mask
+            x_ = x_ * a_mask.to(x_.dtype)
 
-        weight = self.weight
+        weight_ = self.weight
         if self.sparsity_type == "masked-weights-layer":
             w_mask = self._compute_mask_rowwise(weight, ratio).to(weight.dtype)
-            weight = weight * w_mask
+            weight_ = weight_ * w_mask.to(weight_.dtype)
 
-        out = torch.matmul(x, weight.t())
+        out = torch.matmul(x_, weight_.t())
         if self.bias is not None:
             out = out + self.bias
 
         if self.l1_calculation:
-            self.in_l1 = torch.nn.functional.l1_loss(x, torch.zeros_like(x), size_average=None, reduce=None, reduction='mean')
-            self.out_l1 = torch.nn.functional.l1_loss(out, torch.zeros_like(out), size_average=None, reduce=None, reduction='mean')
+            self.in_l1 = x.abs().mean()
+            self.out_l1 = out.abs().mean()
 
         if self.debug_info:
             self.real_input_sparsity = (x == 0).float().mean().item()
@@ -123,7 +124,7 @@ class LinearPruner(nn.Module):
     
     def get_l1_loss(self, l1_target: Literal["weight", "input", "output"] = "weight") -> torch.Tensor:
         if l1_target == "weight":
-            return torch.nn.functional.l1_loss(self.weight, torch.zeros_like(self.weight), size_average=None, reduce=None, reduction='mean')
+            return self.weight.abs().mean()
         elif l1_target == "input":
             if self.in_l1 is None:
                 raise ValueError("in_l1 is not set. Run a forward pass first and check l1_calculation option.")
@@ -132,6 +133,8 @@ class LinearPruner(nn.Module):
             if self.out_l1 is None:
                 raise ValueError("out_l1 is not set. Run a forward pass first and check l1_calculation option.")
             return self.out_l1
+        elif l1_target == "none" or l1_target is None:
+            return torch.tensor(0.0, device=self.weight.device)
         else:
             raise ValueError("l1_target must be 'weight', 'input', or 'output'")
 
@@ -142,7 +145,7 @@ class LinearPruner(nn.Module):
     def from_original(
         cls,
         orig_linear: nn.Linear,
-        sparsity_type: Optional[str] = None,
+        sparsity_type: Optional[SparsityType] = None,
         sparsity_ratio: float = 0.0,
         name: Optional[str] = None,
     ) -> LinearPruner:
@@ -171,10 +174,12 @@ def set_sparsity_ratio(model: nn.Module, ratio: float):
 def replace_linears_with_pruner(
     module: nn.Module,
     sparsity_ratio: float,
-    sparsity_type: str = "masked-activations-layer",
+    sparsity_type: Optional[SparsityType] = "masked-activations-layer",
     mode: str = "all",  # "all", "exclude-first-last", or "custom"
     custom_slice: Optional[slice] = None,  # for "custom" mode
 ) -> List[LinearPruner]:
+    sparsity_type = sparsity_type if sparsity_type != "none" else None
+
     linear_layers = [
         (name, layer)
         for name, layer in module.named_modules()

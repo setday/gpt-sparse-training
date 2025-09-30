@@ -10,12 +10,12 @@ https://github.com/huggingface/transformers/blob/main/src/transformers/models/gp
 import math
 import inspect
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Optional
 
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-from sparsify_activations_layer import replace_linears_with_pruner
+from sparsify_activations_layer import replace_linears_with_pruner, SparsityScale, SparsityType
 
 
 class ReLU2(nn.ReLU):
@@ -135,7 +135,7 @@ class GPTConfig:
 
 class GPT(nn.Module):
 
-    def __init__(self, config, sparsity_ratio = 0.0, sparsity_type = "None", mode = "all", custom_slice=None):
+    def __init__(self, config, sparsity_ratio = 0.0, sparsity_type: Optional[SparsityType] = None, mode = "all", custom_slice=None):
         super().__init__()
         assert config.vocab_size is not None
         assert config.block_size is not None
@@ -306,7 +306,7 @@ class GPT(nn.Module):
         print(f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters")
         # Create AdamW optimizer and use the fused version if it is available
         fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
-        use_fused = fused_available and device_type == 'cuda'
+        use_fused = fused_available and device_type.startswith('cuda')
         extra_args = dict(fused=True) if use_fused else dict()
         optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=betas, **extra_args)
         print(f"using fused AdamW: {use_fused}")

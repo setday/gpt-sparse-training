@@ -49,8 +49,11 @@ warmup_iters = 2000  # warm‑up steps
 lr_decay_iters = 600000  # should be ~= max_iters per Chinchilla
 min_lr = 6e-5  # ~= learning_rate/10 per Chinchilla
 sparsity_mode = "static"
-sparsity_type = "masked-activations-layer" # "orig"
-sparsity_ratio: float | dict | list = 0.2
+sparsity_type = "none" # "orig"
+sparsity_ratio: float | dict | list = 0.0
+
+l1_target = "none"  # "none", "weight", "input", "output"
+l1_lambda = 5e-0  # weight of the L1 loss
 
 # HotFix потому что  забыли завести соответствующие переменные.
 mode: str = 'all'  # "all", "exclude-first-last", or "custom"
@@ -149,9 +152,9 @@ elif init_from == 'resume':
     print(f"Resuming training from {out_dir}")
     ckpt_path = os.path.join(out_dir, eval_ckpt_name)
     checkpoint = torch.load(ckpt_path, map_location=device, weights_only=False)
-    checkpoint_model_args = checkpoint['model_args']
+    checkpoint_config = checkpoint['config']
     for k in ['n_layer', 'n_head', 'n_embd', 'block_size', 'bias', 'vocab_size']:
-        model_args[k] = checkpoint_model_args[k]
+        model_args[k] = getattr(checkpoint_config, k)
         
     gptconf = GPTConfig(**model_args)
     
@@ -228,13 +231,13 @@ if wandb_log and not eval_only:
     wandb.init(project=wandb_project, name=wandb_run_name, config=config)
     wandb.watch(model, log="all", log_freq=100)
 
-train_data = np.memmap(os.path.join('data', dataset, 'train.bin'), dtype=np.uint16, mode='r')
-val_data = np.memmap(os.path.join('data', dataset, 'val.bin'), dtype=np.uint16, mode='r')
+train_data = np.memmap(os.path.join('data', dataset, 'train.bin'), dtype=np.uint16, mode='r').astype(np.int64)
+val_data = np.memmap(os.path.join('data', dataset, 'val.bin'), dtype=np.uint16, mode='r').astype(np.int64)
 val_data = val_data[:len(val_data) - (len(val_data) % block_size)]
 
 trainer = Trainer(model, optimizer, device=device, dtype=ptdtype)
 if not eval_only:
-    trainer.train(
+    stat = trainer.train(
         train_data,
         val_data,
 
@@ -252,10 +255,15 @@ if not eval_only:
         best_model_dir=out_dir if save_best_model else None,
         checkpoint_dir=out_dir if always_save_checkpoint else None,
 
-        l1_target="weight",
+        l1_target=l1_target,
+        l1_lambda=l1_lambda,
+
+        save_gradients=save_gradients,
 
         wandb=wandb,
-    ).visualize(os.path.join(out_dir, 'plots'))
+    )
+    stat.visualize(os.path.join(out_dir, 'plots'))
+    torch.save(stat, os.path.join(out_dir, 'train_stat.pt'))
 else:
     print("Running evaluation only")
     val_loss, ppl_val = trainer.evaluation_step(val_data, batch_size)
