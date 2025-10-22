@@ -4,7 +4,7 @@ defaults:
   - metrics: accuarcy_top_1_5
   - datasets: imagenet
   - dataloader: stable
-  - transforms: stable
+  - transforms: stable_224
   - _self_
 
 num_classes: 1000

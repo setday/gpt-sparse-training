@@ -1,0 +1,12 @@
+train:
+  image:
+    _target_: torchvision.transforms.v2.Compose
+    transforms:
+      - _target_: torchvision.transforms.Resize
+        size: [224, 224]
+inference:
+  image:
+    _target_: torchvision.transforms.v2.Compose
+    transforms:
+      - _target_: torchvision.transforms.Resize
+        size: [224, 224]

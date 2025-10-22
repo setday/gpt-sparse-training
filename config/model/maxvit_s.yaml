@@ -4,4 +4,4 @@ block_channels: [96, 128, 256, 512]
 block_layers: [2, 2, 5, 2]
 head_dim: 32
 stochastic_depth_prob: 0.2
-partition_size: 12
+partition_size: 7
