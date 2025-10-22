@@ -42,5 +42,5 @@ trainer:
   monitor: "max val_Acc_Top_1"
   save_period: -1
   early_stop: ${trainer.n_epochs}
-  save_dir: "saved"
+  save_dir: "saved/maxvit"
   seed: 1
