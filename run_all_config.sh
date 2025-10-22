@@ -3,21 +3,25 @@ set -euo pipefail
 
 export WANDB_MODE="offline"
 
-CONFIG="config/train_wikitext.py"
+CONFIG="config/train_shakespeare_char.py"
 LOGFILE="eval_results.log"
 
 # очистить предыдущий лог
 : > "${LOGFILE}"
 
 # --- списки значений ---
-RATIOS=(0.2 0.5 0.8 0.9)
-TYPES=("masked-activations-layer" "masked-weights-layer")
+RATIOS=(0.0)
+TYPES=("none")
+ACTIVATIONS=("gelu" "relu" "relu^2")
+L1_TARGETS=("none" "input" "output" "weight")
 
 run_once () {
   local stype="$1"
   local sratio="$2"
+  local activation="$3"
+  local l1_target="$4"
   local run_name="${stype}-${sratio}"
-  local out_dir="out-${stype}-${sratio}"
+  local out_dir="out-${activation}-${l1_target}"
 
   echo "=========================="
   echo "Run: ${run_name}"
@@ -29,16 +33,20 @@ run_once () {
     --out_dir="${out_dir}" \
     --sparsity_ratio="${sratio}" \
     --sparsity_type="${stype}" \
+    --activation_function="${activation}" \
+    --l1_target="${l1_target}" \
     --wandb_run_name="${run_name}"
 
   # EVAL (resume)
   tmpfile="$(mktemp)"
   python train.py "${CONFIG}" \
-    --eval_only=True \
+    --run_mode='eval' \
     --init_from='resume' \
     --out_dir="${out_dir}" \
     --sparsity_ratio="${sratio}" \
     --sparsity_type="${stype}" \
+    --activation_function="${activation}" \
+    --l1_target="${l1_target}" \
     --wandb_run_name="${run_name}" | tee "${tmpfile}"
 
   # --- парсинг результатов -------------------------------------------------
@@ -81,7 +89,11 @@ run_once () {
 # сетка
 for stype in "${TYPES[@]}"; do
   for sratio in "${RATIOS[@]}"; do
-    run_once "${stype}" "${sratio}"
+    for activation in "${ACTIVATIONS[@]}"; do
+      for l1_target in "${L1_TARGETS[@]}"; do
+        run_once "${stype}" "${sratio}" "${activation}" "${l1_target}"
+      done
+    done
   done
 done
 

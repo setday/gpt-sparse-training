@@ -1,0 +1,7 @@
+_target_: torchvision.models.maxvit._maxvit
+stem_channels: 64
+block_channels: [96, 192, 384, 768]
+block_layers: [2, 6, 14, 2]
+head_dim: 32
+stochastic_depth_prob: 0.2
+partition_size: 12

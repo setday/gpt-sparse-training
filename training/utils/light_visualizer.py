@@ -61,3 +61,72 @@ def visualize_statistics(directory: str, stats: "TrainingStatistics"):
         axes.grid(True)
         plt.savefig(os.path.join(directory, 'ppl_curve.png'), dpi=500)
         plt.clf()
+
+    for step, stat in zip(stats.real_sparsity_history_steps, stats.real_sparsity_history):
+        x = []
+        weights = []
+        hue = []
+        hints = []
+
+        for i in range(3):
+            x.append(['weight', 'input', 'output'][i])
+            weights.append(0)
+            hue.append("zero")
+            hints.append('------------------' + ['weight', 'input', 'output'][i] + '------------------')
+            for name, value in stat.items():
+                x.extend([name + ['_w', '_i', '_o'][i]] * 3)
+                weights.extend([value[i], value[i+3], value[i+6]])
+                hue.extend(["positive", "zero", "negative"])
+                hints.append(f"+{value[i]:.3f} | {value[i + 3]:.3f} | -{value[i + 6]:.3f}")
+
+        plt.figure(figsize=(2 + len(x) // 8, 6))
+
+        sns.histplot(x=x, hue=hue, weights=weights,
+            multiple="stack",
+            palette="light:m_r",
+            edgecolor=".3",
+            linewidth=.5,)
+        
+        zero_patch = plt.gca().patches[0]
+        bar_start, bar_width = zero_patch.get_x(), zero_patch.get_width()
+
+        for layer_index, hint in enumerate(hints):
+            plt.text(
+                x=bar_start + layer_index * bar_width + bar_width / 2, y = 0.05,
+                s=str(hint),
+                ha='center', va='bottom',
+                rotation=90
+            )
+
+        plt.xlim(-0.65, max(20.0, len(set(x))) - 0.35)
+        plt.xticks(rotation=90)
+        plt.xlabel('Layer')
+        plt.ylabel('Proportion')
+        plt.title(f'Sparsity Distribution at Step {step}')
+        plt.legend(title='Activation Type', labels=['Positive', 'Zero', 'Negative'])
+        plt.tight_layout()
+        plt.savefig(os.path.join(directory, f'sparsity_distribution_step_{step}.png'), dpi=150)
+        plt.clf()
+
+    for step, stat in zip(stats.threshold_history_steps, stats.threshold_history):
+        x = list(stat.keys())
+
+        thresholds_min = [v[0] for v in stat.values()]
+        thresholds_mean = [v[1] for v in stat.values()]
+        thresholds_max = [v[2] for v in stat.values()]
+
+        x_indices = np.arange(len(x))
+        width = 0.25
+        plt.figure(figsize=(2 + len(x) // 4, 6))
+        plt.bar(x_indices - width, thresholds_min, width=width, label='Min Threshold', color='tab:blue', alpha=0.7)
+        plt.bar(x_indices, thresholds_mean, width=width, label='Mean Threshold', color='tab:orange', alpha=0.7)
+        plt.bar(x_indices + width, thresholds_max, width=width, label='Max Threshold', color='tab:green', alpha=0.7)
+        plt.xticks(ticks=x_indices, labels=x, rotation=90)
+        plt.xlabel('Layer')
+        plt.ylabel('Threshold Value')
+        plt.title(f'Threshold Statistics at Step {step}')
+        plt.legend()
+        plt.tight_layout()
+        plt.grid(axis='x')
+        plt.savefig(os.path.join(directory, f'threshold_statistics_step_{step}.png'), dpi=150)
+        plt.clf()

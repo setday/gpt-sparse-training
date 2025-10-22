@@ -1,0 +1,5 @@
+_target_: src.models.coatnet.model.CoAtNet
+image_size: [384, 384]
+in_channels: 3
+num_blocks: [2, 2, 6, 14, 2]
+channels: [64, 96, 192, 384, 768]

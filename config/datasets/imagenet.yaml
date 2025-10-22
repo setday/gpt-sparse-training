@@ -1,0 +1,9 @@
+train:
+  _target_: src.datasets.ImageNetDataset
+  part: "train-1k"
+  instance_transforms: ${transforms.instance_transforms.train}
+val:
+  _target_: src.datasets.ImageNetDataset
+  part: "val-1k"
+  instance_transforms: ${transforms.instance_transforms.inference}
+  limit: 6

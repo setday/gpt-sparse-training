@@ -11,6 +11,7 @@ __all__ = [
 ]
 
 SparsityType = Literal["masked-activations-layer", "masked-weights-layer", "none"]
+SparsityScale = Literal["rowwise", "global", "fixed", "none"]
 
 class LinearPruner(nn.Module):
 
@@ -20,6 +21,7 @@ class LinearPruner(nn.Module):
         out_features: int,
         bias: bool = True,
         sparsity_type: Optional[SparsityType] = None,
+        sparsity_scale: Optional[SparsityScale] = None,
         sparsity_ratio: float = 0.0,
         name: Optional[str] = None,
 
@@ -30,6 +32,7 @@ class LinearPruner(nn.Module):
         self.in_features = in_features
         self.out_features = out_features
         self.sparsity_type = sparsity_type if sparsity_type != "none" else None
+        self.sparsity_scale = sparsity_scale if sparsity_scale != "none" else None
         self.sparsity_ratio = float(sparsity_ratio)
         self.name = name
 
@@ -47,6 +50,9 @@ class LinearPruner(nn.Module):
         self.in_l1, self.out_l1 = None, None
         self.params_count = sum(p.numel() for p in self.parameters() if p.requires_grad)
         self.real_weight_sparsity, self.real_input_sparsity, self.real_output_sparsity = None, None, None
+        self.real_weight_positive, self.real_input_positive, self.real_output_positive = None, None, None
+        self.real_weight_negative, self.real_input_negative, self.real_output_negative = None, None, None
+        self.threshold = None
 
     def __repr__(self) -> str:  
         extra = (
@@ -60,51 +66,59 @@ class LinearPruner(nn.Module):
         )
 
     @staticmethod
-    def _compute_mask_rowwise(x: torch.Tensor, ratio: float) -> torch.Tensor:
+    def _compute_threshold_rowwise(x: torch.Tensor, ratio: float) -> torch.Tensor:
         """0/1-маска для активаций, считается вдоль последней оси.
         Вырубает *k* наименьших |x| на каждом токене.
         """
-        if ratio <= 0.0:
-            return torch.ones_like(x, dtype=torch.bool)
-        if ratio >= 1.0:
-            return torch.zeros_like(x, dtype=torch.bool)
-
-        *batch_dims, features = x.shape
+        features = x.shape[-1]
         k = int(ratio * features)
 
-        if k == 0:
-            return torch.ones_like(x, dtype=torch.bool)
+        if k <= 0:
+            return x.min(dim=-1, keepdim=True).values - 0.001
         if k >= features:
-            return torch.zeros_like(x, dtype=torch.bool)
+            return x.max(dim=-1, keepdim=True).values + 0.001
 
-        abs_x = x.abs()
-        threshold = torch.kthvalue(abs_x, k, dim=-1, keepdim=True).values
-        return abs_x >= threshold
+        return torch.kthvalue(x, k, dim=-1, keepdim=True).values
 
     @staticmethod
-    def _compute_mask_global(w: torch.Tensor, ratio: float) -> torch.Tensor:
+    def _compute_threshold_global(w: torch.Tensor, ratio: float) -> torch.Tensor:
         """0/1-маска для весов – глобальный порог по всему тензору."""
-        if ratio <= 0.0:
-            return torch.ones_like(w, dtype=torch.bool)
-        if ratio >= 1.0:
-            return torch.zeros_like(w, dtype=torch.bool)
+        flat = w.flatten()
 
-        flat = w.abs().flatten()
-        k = int(ratio * flat.numel())
-        if k == 0:
-            return torch.ones_like(w, dtype=torch.bool)
-        threshold = torch.kthvalue(flat, k).values
-        return w.abs() >= threshold
+        features = flat.numel()
+        k = int(ratio * features)
+        
+        if k <= 0:
+            return flat.min() - 0.001
+        if k >= features:
+            return flat.max() + 0.001
+
+        return torch.kthvalue(flat, k).values
+
+    @staticmethod
+    def compute_threshold(x: torch.Tensor, scale: SparsityScale, ratio: float) -> torch.Tensor:
+        if scale == "rowwise":
+            return LinearPruner._compute_threshold_rowwise(x, ratio).detach()
+        if scale == "global":
+            return LinearPruner._compute_threshold_global(x, ratio).detach()
+        if scale == "fixed":
+            return torch.tensor(ratio, device=x.device)
+
+        return torch.tensor(float('-inf'), device=x.device)  # no sparsity
 
     def forward(self, x: torch.Tensor) -> torch.Tensor: 
         x_ = x
-        if self.sparsity_type == "masked-activations-layer":
-            a_mask = self._compute_mask_rowwise(x, ratio).to(x.dtype)
+        if self.sparsity_scale is not None and self.sparsity_type == "masked-activations-layer":
+            x_abs = x_.abs()
+            self.threshold = LinearPruner.compute_threshold(x_abs, self.sparsity_scale, self.sparsity_ratio)
+            a_mask = x_abs >= self.threshold
             x_ = x_ * a_mask.to(x_.dtype)
 
         weight_ = self.weight
-        if self.sparsity_type == "masked-weights-layer":
-            w_mask = self._compute_mask_rowwise(weight, ratio).to(weight.dtype)
+        if self.sparsity_scale is not None and self.sparsity_type == "masked-weights-layer":
+            weight_abs = weight_.abs()
+            self.threshold = LinearPruner.compute_threshold(weight_abs, self.sparsity_scale, self.sparsity_ratio)
+            w_mask = weight_abs >= self.threshold
             weight_ = weight_ * w_mask.to(weight_.dtype)
 
         out = torch.matmul(x_, weight_.t())
@@ -118,7 +132,13 @@ class LinearPruner(nn.Module):
         if self.debug_info:
             self.real_input_sparsity = (x == 0).float().mean().item()
             self.real_output_sparsity = (out == 0).float().mean().item()
-            self.real_weight_sparsity = (weight == 0).float().mean().item()
+            self.real_weight_sparsity = (self.weight == 0).float().mean().item()
+            self.real_input_positive = (x > 0).float().mean().item()
+            self.real_output_positive = (out > 0).float().mean().item()
+            self.real_weight_positive = (self.weight > 0).float().mean().item()
+            self.real_input_negative = 1.0 - self.real_input_positive - self.real_input_sparsity
+            self.real_output_negative = 1.0 - self.real_output_positive - self.real_output_sparsity
+            self.real_weight_negative = 1.0 - self.real_weight_positive - self.real_weight_sparsity
 
         return out
     
@@ -137,6 +157,28 @@ class LinearPruner(nn.Module):
             return torch.tensor(0.0, device=self.weight.device)
         else:
             raise ValueError("l1_target must be 'weight', 'input', or 'output'")
+        
+    def get_real_sparsities_info(self) -> tuple[float, float, float, float, float, float, float, float, float]:
+        assert all(v is not None for v in [
+                self.real_weight_sparsity,
+                self.real_input_sparsity,
+                self.real_output_sparsity,
+                self.real_weight_positive,
+                self.real_input_positive,
+                self.real_output_positive,
+                self.real_weight_negative,
+                self.real_input_negative,
+                self.real_output_negative
+        ]), "real sparsities are not set. Run a forward pass first and check debug_info option."
+
+        return self.real_weight_sparsity, self.real_input_sparsity, self.real_output_sparsity,\
+                self.real_weight_positive, self.real_input_positive, self.real_output_positive,\
+                self.real_weight_negative, self.real_input_negative, self.real_output_negative
+    
+    def get_threshold_info(self) -> tuple[float, float, float]:
+        assert self.threshold is not None, "threshold is not set. Run a forward pass first."
+
+        return self.threshold.min().item(), self.threshold.mean().item(), self.threshold.max().item()
 
     def set_sparsity_ratio(self, sparsity_ratio: float) -> None:
         self.sparsity_ratio = float(sparsity_ratio)
@@ -147,6 +189,7 @@ class LinearPruner(nn.Module):
         orig_linear: nn.Linear,
         sparsity_type: Optional[SparsityType] = None,
         sparsity_ratio: float = 0.0,
+        sparsity_scale: Optional[Literal["rowwise", "global"]] = None,
         name: Optional[str] = None,
     ) -> LinearPruner:
         pruner = cls(
@@ -154,11 +197,9 @@ class LinearPruner(nn.Module):
             orig_linear.out_features,
             bias=orig_linear.bias is not None,
             sparsity_type=sparsity_type,
+            sparsity_scale=sparsity_scale,
             sparsity_ratio=sparsity_ratio,
             name=name,
-
-            debug_info=True,
-            l1_calculation=True,
         )
         pruner.weight.data.copy_(orig_linear.weight.data)
         if orig_linear.bias is not None:
@@ -175,10 +216,12 @@ def replace_linears_with_pruner(
     module: nn.Module,
     sparsity_ratio: float,
     sparsity_type: Optional[SparsityType] = "masked-activations-layer",
+    sparsity_scale: Optional[SparsityScale] = "rowwise",
     mode: str = "all",  # "all", "exclude-first-last", or "custom"
     custom_slice: Optional[slice] = None,  # for "custom" mode
 ) -> List[LinearPruner]:
     sparsity_type = sparsity_type if sparsity_type != "none" else None
+    sparsity_scale = sparsity_scale if sparsity_scale != "none" else None
 
     linear_layers = [
         (name, layer)
@@ -208,6 +251,7 @@ def replace_linears_with_pruner(
                     child,
                     sparsity_type=sparsity_type,
                     sparsity_ratio=sparsity_ratio,
+                    sparsity_scale=sparsity_scale,
                     name=full_name,
                 ).to(child.weight.device)
                 setattr(layer, child_name, pruner)
@@ -216,6 +260,7 @@ def replace_linears_with_pruner(
             elif isinstance(child, LinearPruner):
                 child.set_sparsity_ratio(sparsity_ratio)
                 child.sparsity_type = sparsity_type
+                child.sparsity_scale = sparsity_scale
                 resulting_layers.append(child)
 
     return resulting_layers

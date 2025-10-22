@@ -5,3 +5,6 @@ data/**/train.bin
 data/**/val.bin
 
 out-*/
+outputs/
+mlruns/
+saved/

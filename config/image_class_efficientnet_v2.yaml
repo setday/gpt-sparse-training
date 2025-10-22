@@ -1,0 +1,46 @@
+defaults:
+  - model: efficientnet_v2_b
+  - writer: mlflow
+  - metrics: accuarcy_top_1_5
+  - datasets: imagenet
+  - dataloader: stable
+  - transforms: stable
+  - _self_
+
+num_classes: 1000
+model_transforms: []
+
+optimizer:
+  _target_: torch.optim.AdamW
+  lr: 6e-4
+  weight_decay: 1e-1
+  betas: [0.9, 0.95]
+
+lr_scheduler:
+  _target_: torch.optim.lr_scheduler.OneCycleLR
+  max_lr: 6e-4
+  pct_start: 0.02
+  div_factor: 10.0
+  final_div_factor: 10.0
+  steps_per_epoch: ${trainer.epoch_len}
+  epochs: ${trainer.n_epochs}
+  anneal_strategy: cos
+
+loss_function:
+  _target_: src.loss.MCELossWrapper
+
+trainer:
+  log_step: 20
+  n_epochs: 80
+  epoch_len: 10
+  max_grad_norm: 1.0
+  accum_steps: 1
+  device_tensors: ["image", "target"]
+  resume_from: null
+  device: auto
+  override: True
+  monitor: "max val_Acc_Top_1"
+  save_period: -1
+  early_stop: ${trainer.n_epochs}
+  save_dir: "saved"
+  seed: 1

@@ -6,10 +6,28 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from time import time
-import subprocess
-from contextlib import redirect_stderr, redirect_stdout
 import io
-from teeoutput import TeeOutput
+
+class TeeOutput:
+    def __init__(self, original_std, buffer):
+        self.original_std = original_std
+        self.buffer = buffer
+    
+    def write(self, text):
+        # Записываем в оригинальный поток (консоль)
+        self.original_std.write(text)
+        self.original_std.flush()
+        # Записываем в буфер для перехвата
+        self.buffer.write(text)
+    
+    def flush(self):
+        self.original_std.flush()
+        self.buffer.flush()
+    
+    def __getattr__(self, attr):
+        # Проксируем остальные методы оригинальному потоку
+        return getattr(self.original_std, attr)
+    
 
 os.environ['WANDB_MODE'] = 'offline'
 #os.environ["WANDB_DISABLED"] = "true"
@@ -75,7 +93,7 @@ def run_once (**kargs):
     # EVAL (resume)
     params = dict(BASIC)
     params.update({"out_dir":out_dir, "wandb_run_name":run_name,
-              "eval_only":True, "init_from":'resume'})
+              "run_mode":'eval', "init_from":'resume'})
     params.update(kargs)
     val_global = {'CONFIG':CONFIG, 'PARAMS':params}
     stdout_buffer, stderr_buffer = io.StringIO(), io.StringIO()
